@@ -9,26 +9,6 @@ A simple educational container runtime implemented in Go using Linux namespaces 
 - **PID namespace** - Isolates process IDs  
 - **Mount namespace** - Isolates filesystem mounts
 
-## Implementation
-
-The core `run()` function in `pkg/ns/namespace.go` creates a new process with isolated namespaces:
-
-```go
-// RunSimple starts /bin/bash in isolated UTS, PID, and mount namespaces
-func RunSimple() error {
-    fmt.Printf("[ns] creating PID, UTS, and mount namespaces\n")
-    
-    // Create a new bash process
-    cmd := exec.Command("/bin/bash")
-    
-    // Set up namespace isolation
-    cmd.SysProcAttr = &syscall.SysProcAttr{
-        Cloneflags: unix.CLONE_NEWUTS | unix.CLONE_NEWPID | unix.CLONE_NEWNS,
-    }
-    
-    // ... rest of implementation
-}
-```
 
 ## Usage
 
@@ -42,9 +22,6 @@ go build -o nsctl ./cmd
 ### Run Commands
 
 ```bash
-# Start a simple isolated bash shell
-./nsctl simple
-
 # Run a specific command in isolation  
 ./nsctl run /bin/bash
 

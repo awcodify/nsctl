@@ -72,7 +72,6 @@ func setupNamespaceEnvironment() error {
 }
 
 // RunWithSetup creates a process with namespaces and runs setup inside it
-// This implementation uses Go code to handle namespace setup
 func RunWithSetup(execPath string, command string, args []string) error {
 	fmt.Printf("[ns] creating PID, UTS, and mount namespaces with internal setup\n")
 
