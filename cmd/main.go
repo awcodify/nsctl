@@ -9,55 +9,82 @@ import (
 )
 
 func main() {
-	// Handle the special case where we're re-executing ourselves
-	// for namespace setup (called from RunWithSetup)
-	if len(os.Args) >= 3 && os.Args[1] == "setup-and-exec" {
-		targetCmd := os.Args[2]
-		targetArgs := os.Args[3:]
-
-		if err := ns.HandleSetupAndExec(targetCmd, targetArgs); err != nil {
-			log.Fatalf("Failed to setup and exec: %v", err)
-		}
+	// Special case: we're being re-executed to run setup inside the namespace
+	// This happens when RunWithSetup re-executes this binary with "setup-and-exec"
+	if isNamespaceSetupCall() {
+		handleNamespaceSetup()
 		return
 	}
 
-	// Parse command line arguments
+	// Normal execution: parse user commands
 	if len(os.Args) < 2 {
-		fmt.Printf("Usage: %s run <command> [args...]\n", os.Args[0])
-		fmt.Printf("       %s ps\n", os.Args[0])
+		showUsage()
 		os.Exit(1)
 	}
 
 	command := os.Args[1]
-
 	switch command {
 	case "run":
-		if len(os.Args) < 3 {
-			fmt.Printf("Usage: %s run <command> [args...]\n", os.Args[0])
-			os.Exit(1)
-		}
-
-		// Extract the command and its arguments
-		targetCmd := os.Args[2]
-		targetArgs := os.Args[3:]
-
-		fmt.Printf("[nsctl] starting container with command: %s %v\n", targetCmd, targetArgs)
-
-		// Use os.Args[0] as the executable path - this is more reliable than os.Executable()
-		// especially when /proc/self/exe might not be available
-		execPath := os.Args[0]
-
-		// Run the command in isolated namespaces
-		if err := ns.RunWithSetup(execPath, targetCmd, targetArgs); err != nil {
-			log.Fatalf("Failed to run container: %v", err)
-		}
-
+		handleRunCommand()
 	case "ps":
-		fmt.Printf("[nsctl] listing containers (not implemented yet)\n")
-
+		handlePsCommand()
 	default:
 		fmt.Printf("Unknown command: %s\n", command)
-		fmt.Printf("Available commands: run, ps\n")
+		showUsage()
 		os.Exit(1)
 	}
+}
+
+// isNamespaceSetupCall checks if we're being called for internal namespace setup
+func isNamespaceSetupCall() bool {
+	return len(os.Args) >= 3 && os.Args[1] == "setup-and-exec"
+}
+
+// handleNamespaceSetup processes the internal namespace setup call
+func handleNamespaceSetup() {
+	targetCmd := os.Args[2]
+	targetArgs := os.Args[3:]
+
+	if err := ns.HandleSetupAndExec(targetCmd, targetArgs); err != nil {
+		log.Fatalf("Failed to setup namespace: %v", err)
+	}
+}
+
+// handleRunCommand processes the "run" command to start a container
+func handleRunCommand() {
+	if len(os.Args) < 3 {
+		fmt.Printf("Missing command to run\n")
+		fmt.Printf("Usage: %s run <command> [args...]\n", os.Args[0])
+		os.Exit(1)
+	}
+
+	targetCmd := os.Args[2]
+	targetArgs := os.Args[3:]
+
+	fmt.Printf("[nsctl] Starting container with command: %s %v\n", targetCmd, targetArgs)
+
+	// Use current executable path for re-execution
+	execPath := os.Args[0]
+
+	// Create isolated environment and run the command
+	if err := ns.RunWithSetup(execPath, targetCmd, targetArgs); err != nil {
+		log.Fatalf("Container failed: %v", err)
+	}
+}
+
+// handlePsCommand processes the "ps" command to list containers
+func handlePsCommand() {
+	fmt.Printf("[nsctl] Listing containers (feature not implemented yet)\n")
+	fmt.Printf("This would show running nsctl containers and their PIDs\n")
+}
+
+// showUsage displays help information
+func showUsage() {
+	fmt.Printf("[nsctl] Minimal Container Runtime\n\n")
+	fmt.Printf("Usage:\n")
+	fmt.Printf("  %s run <command> [args...]  # Run command in isolated container\n", os.Args[0])
+	fmt.Printf("  %s ps                       # List running containers\n", os.Args[0])
+	fmt.Printf("\nExamples:\n")
+	fmt.Printf("  %s run /bin/bash           # Start isolated bash shell\n", os.Args[0])
+	fmt.Printf("  %s run ls -la              # Run ls command in container\n", os.Args[0])
 }

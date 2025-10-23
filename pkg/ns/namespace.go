@@ -4,7 +4,6 @@ package ns
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"syscall"
@@ -12,117 +11,98 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Run creates a new process with isolated UTS, PID, and mount namespaces,
-// mounts /proc, sets hostname, and executes the specified command
-func Run(command string, args []string) error {
-	fmt.Printf("[ns] creating PID, UTS, and mount namespaces\n")
-
-	// Create the command that will run in the new namespaces
-	cmd := exec.Command(command, args...)
-
-	// Set up namespace isolation using Clone flags
-	// CLONE_NEWUTS: isolate hostname and domainname
-	// CLONE_NEWPID: isolate process IDs (new PID namespace)
-	// CLONE_NEWNS: isolate mount points (mount namespace)
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags: syscall.CLONE_NEWUTS | syscall.CLONE_NEWPID | syscall.CLONE_NEWNS,
-	}
-
-	// Connect stdin, stdout, stderr to the parent process
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	// Start the process in the new namespaces
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start command in namespace: %v", err)
-	}
-
-	// Get the PID of the new process for logging
-	containerPID := cmd.Process.Pid
-	fmt.Printf("[ns] started container process with PID %d\n", containerPID)
-
-	// Wait for the process to complete
-	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("container process exited with error: %v", err)
-	}
-
-	return nil
-}
-
-// setupNamespaceEnvironment is called from within the new namespace
-// to set up the isolated environment (mount /proc, set hostname)
-func setupNamespaceEnvironment() error {
-	fmt.Printf("[ns] setting up namespace environment\n")
-
-	// Set hostname to "container" in the new UTS namespace
-	fmt.Printf("[ns] setting hostname to 'container'\n")
-	if err := unix.Sethostname([]byte("container")); err != nil {
-		return fmt.Errorf("failed to set hostname: %v", err)
-	}
-
-	// Mount /proc inside the new PID namespace so commands like ps work correctly
-	// This gives us the isolated view of processes in the new PID namespace
-	fmt.Printf("[ns] mounting /proc filesystem\n")
-	if err := unix.Mount("proc", "/proc", "proc", 0, ""); err != nil {
-		return fmt.Errorf("failed to mount /proc: %v", err)
-	}
-
-	return nil
-}
-
-// RunWithSetup creates a process with namespaces and runs setup inside it
+// RunWithSetup creates a process with isolated namespaces and sets up the environment
+// This is the main entry point for creating containers
 func RunWithSetup(execPath string, command string, args []string) error {
-	fmt.Printf("[ns] creating PID, UTS, and mount namespaces with internal setup\n")
+	fmt.Printf("[ns] Creating isolated namespaces (PID, UTS, Mount)\n")
+	fmt.Printf("[ns] Using executable: %s\n", execPath)
 
-	// Use the provided executable path (obtained from the parent process)
-	// This avoids the /proc/self/exe issue inside the new mount namespace
-	fmt.Printf("[ns] using executable path: %s\n", execPath)
+	// Re-execute ourselves with special arguments to run setup inside the namespace
+	// This two-step process is necessary because namespace setup must happen inside the namespace
+	setupArgs := []string{"setup-and-exec", command}
+	setupArgs = append(setupArgs, args...)
 
-	// Create arguments for re-executing ourselves with the setup-and-exec command
-	wrapperArgs := []string{execPath, "setup-and-exec", command}
-	wrapperArgs = append(wrapperArgs, args...)
+	cmd := exec.Command(execPath, setupArgs...)
 
-	cmd := exec.Command(execPath, wrapperArgs[1:]...)
+	// Configure namespace isolation using clone flags
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags: unix.CLONE_NEWUTS | unix.CLONE_NEWPID | unix.CLONE_NEWNS,
+		Cloneflags: unix.CLONE_NEWUTS | // Isolate hostname/domainname
+			unix.CLONE_NEWPID | // Isolate process IDs (new PID namespace)
+			unix.CLONE_NEWNS, // Isolate filesystem mounts
 	}
 
+	// Connect container I/O to parent terminal
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
+	// Start the namespaced process
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start namespace process: %v", err)
 	}
 
 	containerPID := cmd.Process.Pid
-	fmt.Printf("[ns] started container process with PID %d\n", containerPID)
+	fmt.Printf("[ns] Container started with PID %d\n", containerPID)
 
+	// Wait for container to finish and return its exit status
 	return cmd.Wait()
 }
 
-// HandleSetupAndExec is called when the program is re-executed with "setup-and-exec"
-// This allows us to run setup code inside the new namespace
+// HandleSetupAndExec runs inside the new namespace to set up the environment
+// and then execute the target command
 func HandleSetupAndExec(targetCmd string, targetArgs []string) error {
-	// We're now inside the new namespace, set up the environment
-	if err := setupNamespaceEnvironment(); err != nil {
-		log.Fatalf("Failed to setup namespace environment: %v", err)
+	fmt.Printf("[ns] Setting up isolated environment...\n")
+
+	// Step 1: Set custom hostname in the UTS namespace
+	newHostname := "container"
+	fmt.Printf("[ns] Setting hostname to '%s'\n", newHostname)
+	if err := unix.Sethostname([]byte(newHostname)); err != nil {
+		return fmt.Errorf("failed to set hostname: %v", err)
 	}
 
-	// Execute the target command
-	fmt.Printf("[ns] executing target command: %s %v\n", targetCmd, targetArgs)
+	// Step 2: Mount /proc for the new PID namespace
+	// This gives us the isolated view of processes (ps, top, etc. will work correctly)
+	fmt.Printf("[ns] Mounting /proc filesystem for isolated process view\n")
+	if err := unix.Mount("proc", "/proc", "proc", 0, ""); err != nil {
+		return fmt.Errorf("failed to mount /proc: %v", err)
+	}
 
-	// Replace current process with the target command
-	// This ensures the target command becomes PID 1 in the new namespace
+	// Step 3: Execute the target command
+	fmt.Printf("[ns] Executing target command: %s %v\n", targetCmd, targetArgs)
+
+	// Find the full path to the command
 	targetPath, err := exec.LookPath(targetCmd)
 	if err != nil {
-		return fmt.Errorf("failed to find command %s: %v", targetCmd, err)
+		return fmt.Errorf("command not found: %s (%v)", targetCmd, err)
 	}
 
-	// Prepare arguments (argv[0] should be the command name)
+	// Replace the current process with the target command
+	// This makes the target command PID 1 in the new namespace
 	execArgs := append([]string{targetCmd}, targetArgs...)
 
-	// Execute the command, replacing the current process
+	fmt.Printf("[ns] Replacing process with target command...\n")
 	return syscall.Exec(targetPath, execArgs, os.Environ())
+}
+
+// Legacy function kept for compatibility - prefer RunWithSetup
+func Run(command string, args []string) error {
+	fmt.Printf("[ns] Using legacy Run function - consider using RunWithSetup\n")
+
+	cmd := exec.Command(command, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Cloneflags: syscall.CLONE_NEWUTS | syscall.CLONE_NEWPID | syscall.CLONE_NEWNS,
+	}
+
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start command in namespace: %v", err)
+	}
+
+	containerPID := cmd.Process.Pid
+	fmt.Printf("[ns] Started process with PID %d\n", containerPID)
+
+	return cmd.Wait()
 }
