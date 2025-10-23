@@ -74,8 +74,14 @@ func handleRunCommand() {
 
 // handlePsCommand processes the "ps" command to list containers
 func handlePsCommand() {
-	fmt.Printf("[nsctl] Listing containers (feature not implemented yet)\n")
-	fmt.Printf("This would show running nsctl containers and their PIDs\n")
+	fmt.Printf("[nsctl] Listing containers...\n")
+
+	containers, err := ns.ListContainers()
+	if err != nil {
+		log.Fatalf("Failed to list containers: %v", err)
+	}
+
+	fmt.Print(ns.FormatContainerTable(containers))
 }
 
 // showUsage displays help information

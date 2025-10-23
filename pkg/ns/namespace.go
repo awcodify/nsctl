@@ -44,8 +44,23 @@ func RunWithSetup(execPath string, command string, args []string) error {
 	containerPID := cmd.Process.Pid
 	fmt.Printf("[ns] Container started with PID %d\n", containerPID)
 
+	// Register the container for tracking
+	containerID, err := RegisterContainer(containerPID, command, args)
+	if err != nil {
+		fmt.Printf("[ns] Warning: failed to register container: %v\n", err)
+	}
+
 	// Wait for container to finish and return its exit status
-	return cmd.Wait()
+	err = cmd.Wait()
+
+	// Unregister the container when it finishes
+	if containerID != "" {
+		if unregErr := UnregisterContainer(containerID); unregErr != nil {
+			fmt.Printf("[ns] Warning: failed to unregister container: %v\n", unregErr)
+		}
+	}
+
+	return err
 }
 
 // HandleSetupAndExec runs inside the new namespace to set up the environment
